@@ -1,0 +1,144 @@
+:root {
+  --bg: #eff4f1;
+  --panel: #ffffff;
+  --line: #d7dfda;
+  --text: #1f2521;
+  --brand: #0c6b73;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "Space Grotesk", sans-serif;
+  background: linear-gradient(160deg, #e4efe8 0%, #edf1f7 100%);
+  color: var(--text);
+}
+
+.shell {
+  max-width: 900px;
+  margin: 2rem auto;
+  padding: 0 1rem 2rem;
+}
+
+h1 { margin: 0 0 1rem; }
+h2 { margin: 0 0 .8rem; font-size: 1.1rem; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 8px 26px rgba(24, 40, 30, 0.08);
+}
+
+form { display: grid; gap: .7rem; }
+input, textarea, button {
+  font: inherit;
+}
+
+.constraints-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: .7rem;
+}
+
+.constraints-row label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: .55rem .65rem;
+}
+
+.constraints-row input[type="number"] {
+  width: 84px;
+  min-width: 84px;
+  padding: .35rem .45rem;
+  text-align: right;
+}
+
+input[type="file"], textarea {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: .65rem;
+  background: #fff;
+}
+
+textarea {
+  min-height: 140px;
+  resize: vertical;
+}
+
+button {
+  width: fit-content;
+  border: 0;
+  border-radius: 10px;
+  padding: .65rem 1rem;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+  background: linear-gradient(120deg, var(--brand) 0%, #315d94 100%);
+}
+
+#status {
+  margin: 0 0 .7rem;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .9rem;
+}
+
+.progress-wrap {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: #e3e9e5;
+  border: 1px solid var(--line);
+  overflow: hidden;
+  margin: 0 0 .4rem;
+}
+
+.progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(120deg, var(--brand) 0%, #315d94 100%);
+  transition: width 180ms linear;
+}
+
+.progress-label {
+  margin: 0 0 .7rem;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .82rem;
+  color: #4e5b53;
+}
+
+#srt-output {
+  display: block;
+  width: 100%;
+  margin: 0;
+  min-height: 180px;
+  max-height: 420px;
+  overflow: auto;
+  padding: .75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f9fbfa;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .82rem;
+  white-space: pre;
+  resize: vertical;
+}
+
+.manual-row {
+  display: flex;
+  gap: .6rem;
+  margin-top: .7rem;
+}
+
+@media (max-width: 700px) {
+  .constraints-row {
+    grid-template-columns: 1fr;
+  }
+}
