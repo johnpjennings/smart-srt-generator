@@ -1,13 +1,13 @@
 const mp3Form = document.getElementById("mp3-form");
 const scriptForm = document.getElementById("script-form");
 const statusEl = document.getElementById("status");
+const loadingIndicatorEl = document.getElementById("loading-indicator");
 const srtOutputEl = document.getElementById("srt-output");
 const uploadBtn = document.getElementById("upload-btn");
 const splitBtn = document.getElementById("split-btn");
 const mergeBtn = document.getElementById("merge-btn");
+const removeGapsBtn = document.getElementById("remove-gaps-btn");
 const downloadSrtBtn = document.getElementById("download-srt-btn");
-const progressBarEl = document.getElementById("progress-bar");
-const progressLabelEl = document.getElementById("progress-label");
 let lastCompletedJobId = null;
 let isApplyingManual = false;
 
@@ -15,29 +15,87 @@ function setStatus(msg) {
   statusEl.textContent = msg;
 }
 
-function setProgress(percent) {
-  const safe = Math.max(0, Math.min(100, Number(percent || 0)));
-  progressBarEl.style.width = `${safe}%`;
-  progressLabelEl.textContent = `${Math.round(safe)}%`;
+function setLoading(isLoading) {
+  if (loadingIndicatorEl) {
+    loadingIndicatorEl.classList.toggle("active", !!isLoading);
+  }
+}
+
+function removeSrtGaps(srtText) {
+  const normalized = (srtText || "").replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return { updatedText: "", adjustedCount: 0, cueCount: 0 };
+  }
+
+  const rawBlocks = normalized.split(/\n{2,}/).filter(Boolean);
+  const cues = [];
+
+  for (const block of rawBlocks) {
+    const lines = block.split("\n");
+    const timeLineIndex = lines.findIndex((ln) => ln.includes("-->"));
+    if (timeLineIndex < 0) continue;
+
+    const timeLine = lines[timeLineIndex].trim();
+    const match = timeLine.match(/^(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})(.*)$/);
+    if (!match) continue;
+
+    const [, start, end, suffix] = match;
+    const textLines = lines.slice(timeLineIndex + 1);
+    cues.push({ start, end, suffix: suffix || "", textLines });
+  }
+
+  if (cues.length < 2) {
+    return { updatedText: normalized, adjustedCount: 0, cueCount: cues.length };
+  }
+
+  let adjustedCount = 0;
+  for (let i = 0; i < cues.length - 1; i += 1) {
+    const nextStart = cues[i + 1].start;
+    if (cues[i].end !== nextStart) {
+      cues[i].end = nextStart;
+      adjustedCount += 1;
+    }
+  }
+
+  const rebuilt = cues
+    .map((cue, idx) => {
+      const textBody = cue.textLines.length ? `\n${cue.textLines.join("\n")}` : "";
+      return `${idx + 1}\n${cue.start} --> ${cue.end}${cue.suffix}${textBody}`;
+    })
+    .join("\n\n");
+
+  return { updatedText: rebuilt, adjustedCount, cueCount: cues.length };
 }
 
 async function pollJob(jobId) {
-  while (true) {
-    const res = await fetch(`/api/progress/${jobId}`);
-    if (!res.ok) {
-      throw new Error(`Progress failed (${res.status})`);
-    }
-    const job = await res.json();
-    setProgress(job.progress || 0);
+  return new Promise((resolve, reject) => {
+    const stream = new EventSource(`/api/progress_stream/${jobId}`);
 
-    if (job.status === "done") {
-      return job.result;
-    }
-    if (job.status === "error") {
-      throw new Error(job.error || "Transcription failed");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 350));
-  }
+    stream.addEventListener("progress", (evt) => {
+      const job = JSON.parse(evt.data);
+      if (job.status === "queued") {
+        setStatus("Queued...");
+      } else if (job.status === "running") {
+        setStatus("Transcription in process...");
+      }
+
+      if (job.status === "done") {
+        setStatus("Done");
+        stream.close();
+        resolve(job.result);
+      } else if (job.status === "error") {
+        setStatus("Error");
+        stream.close();
+        reject(new Error(job.error || "Transcription failed"));
+      }
+    });
+
+    stream.addEventListener("error", () => {
+      setStatus("Progress stream disconnected");
+      stream.close();
+      reject(new Error("Progress stream disconnected"));
+    });
+  });
 }
 
 mp3Form.addEventListener("submit", async (e) => {
@@ -52,8 +110,8 @@ mp3Form.addEventListener("submit", async (e) => {
   data.append("script_text", document.getElementById("script").value || "");
 
   uploadBtn.disabled = true;
-  setProgress(0);
-  setStatus("Queued...");
+  setLoading(true);
+  setStatus("Starting transcription...");
   srtOutputEl.value = "";
 
   try {
@@ -69,14 +127,12 @@ mp3Form.addEventListener("submit", async (e) => {
     lastCompletedJobId = startPayload.job_id;
     console.log("Whisper debug output:", payload.result_pretty || payload.result);
     srtOutputEl.value = payload.srt_text || "";
-    setStatus("Done");
-    setProgress(100);
   } catch (err) {
     setStatus("Error");
     console.error("Transcription error:", err);
     srtOutputEl.value = "";
-    setProgress(0);
   } finally {
+    setLoading(false);
     uploadBtn.disabled = false;
   }
 });
@@ -184,6 +240,22 @@ mergeBtn.addEventListener("click", async () => {
   const after = text.slice(end);
   srtOutputEl.value = `${before}\n\n${cleanedSelected}\n\n${after}`.replace(/\n{3,}/g, "\n\n");
   await applyManualEdits();
+});
+
+removeGapsBtn.addEventListener("click", () => {
+  const srtText = srtOutputEl.value || "";
+  if (!srtText.trim()) {
+    setStatus("No SRT text to update.");
+    return;
+  }
+
+  const { updatedText, adjustedCount, cueCount } = removeSrtGaps(srtText);
+  srtOutputEl.value = updatedText;
+  if (cueCount < 2) {
+    setStatus("Need at least 2 subtitles to remove gaps.");
+    return;
+  }
+  setStatus(`Remove Gaps applied (${adjustedCount} subtitle timings updated).`);
 });
 
 downloadSrtBtn.addEventListener("click", () => {

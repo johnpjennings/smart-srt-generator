@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=20260307d" />
   </head>
   <body>
     <main class="shell">
@@ -42,19 +42,20 @@
       <section class="card">
         <h2>3) SRT Output</h2>
         <p id="status">Idle</p>
-        <div class="progress-wrap" aria-label="Transcription progress">
-          <div id="progress-bar" class="progress-bar"></div>
+        <div id="loading-indicator" class="loading-indicator" aria-hidden="true">
+          <span class="spinner" aria-hidden="true"></span>
+          <span>Transcription in process. This may take a few minutes depending on the length of the audio.</span>
         </div>
-        <p id="progress-label" class="progress-label">0%</p>
         <textarea id="srt-output" placeholder="Whisper SRT will appear here. You can edit it directly."></textarea>
         <div class="manual-row">
           <button type="button" id="split-btn">Split</button>
           <button type="button" id="merge-btn">Merge</button>
+          <button type="button" id="remove-gaps-btn">Remove Gaps</button>
           <button type="button" id="download-srt-btn">Download SRT</button>
         </div>
       </section>
     </main>
 
-    <script src="/app.js"></script>
+    <script src="/app.js?v=20260307e"></script>
   </body>
 </html>

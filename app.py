@@ -1,16 +1,21 @@
 import json
 import math
+import os
 import re
 import shutil
+import subprocess
+import sys
 import threading
 import tempfile
 import time
 import uuid
+import asyncio
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import whisper_timestamped as whisper
 
@@ -23,6 +28,16 @@ JOBS: Dict[str, Dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
 DEFAULT_SRT_MAX_LINE_WIDTH = 50
 DEFAULT_SRT_MAX_SEGMENT_SECONDS = 4.0
+
+
+@app.middleware("http")
+async def disable_cache(request: Request, call_next):
+    response = await call_next(request)
+    # Ensure clients always fetch latest JS/CSS/progress responses while developing.
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @app.on_event("startup")
@@ -47,13 +62,21 @@ def _set_job(job_id: str, **updates):
             JOBS[job_id].update(updates)
 
 
+def _get_job_snapshot(job_id: str):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return None
+        return dict(job)
+
+
 def _update_job_progress(job_id: str, current: float, total: float):
     if not total:
         return
     percent = int(max(0, min(100, round((current / total) * 100))))
     # Avoid showing 100% before the final result payload is ready.
     percent = min(percent, 99)
-    _set_job(job_id, progress=percent, updated_at=time.time())
+    _set_job(job_id, progress=percent, progress_source="tqdm_hook", updated_at=time.time())
 
 
 def _segment_text_from_words(words) -> str:
@@ -418,35 +441,83 @@ def _retime_manual_srt(result: dict, edited_srt: str) -> str:
 
 
 def _run_transcription_job(job_id: str, path: Path, srt_max_chars: int, srt_max_seconds: float, script_text: str):
+    workdir = None
     try:
         with TRANSCRIBE_LOCK:
-            model = _get_model(model_name="small", device="cpu")
-            import whisper.transcribe as whisper_transcribe_module
+            workdir = Path(tempfile.mkdtemp(prefix="smart_srt_whisper_"))
+            cmd = [
+                sys.executable,
+                "-c",
+                (
+                    "from whisper_timestamped.transcribe import cli as _cli; "
+                    "_cli()"
+                ),
+                str(path),
+                "--model",
+                "small",
+                "--device",
+                "cpu",
+                "--output_dir",
+                str(workdir),
+                "--output_format",
+                "json",
+                "--verbose",
+                "True",
+            ]
+            env = dict(os.environ)
+            env["PYTHONUNBUFFERED"] = "1"
 
-            original_tqdm = getattr(whisper_transcribe_module, "tqdm", None)
+            _set_job(job_id, status="running", progress=0, progress_source="subprocess_start")
+            print(f"[{job_id}] Whisper job started", flush=True)
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=env,
+            )
 
-            def tracked_tqdm(*args, **kwargs):
-                base = original_tqdm(*args, **kwargs)
-                total = getattr(base, "total", None)
-                n = getattr(base, "n", 0)
-                if total:
-                    _update_job_progress(job_id, n, total)
+            tail = ""
+            last_pct = -1
+            last_frame_pair = (-1, -1)
+            while True:
+                chunk = proc.stdout.read(256) if proc.stdout else ""
+                if chunk:
+                    # Mirror subprocess output into server console.
+                    print(chunk, end="", flush=True)
+                    tail = (tail + chunk)[-8000:]
+                    # Parse progress from combined tail to handle split regex tokens.
+                    matches = list(re.finditer(r"(\d{1,3})%\|", tail))
+                    frame_matches = list(re.finditer(r"(\d+)\s*/\s*(\d+)", tail))
+                    if matches:
+                        pct = max(0, min(99, int(matches[-1].group(1))))
+                        if pct != last_pct:
+                            last_pct = pct
+                            _set_job(job_id, progress=pct, progress_source="subprocess_parse", updated_at=time.time())
+                            print(f"[{job_id}] Whisper progress: {pct}%", flush=True)
+                    if frame_matches:
+                        cur = int(frame_matches[-1].group(1))
+                        total = int(frame_matches[-1].group(2))
+                        if (cur, total) != last_frame_pair and total > 0:
+                            last_frame_pair = (cur, total)
+                            pct_from_frames = int(max(0, min(99, round((cur / total) * 100))))
+                            print(
+                                f"[{job_id}] Whisper frames: {cur}/{total} ({pct_from_frames}%)",
+                                flush=True,
+                            )
+                elif proc.poll() is not None:
+                    break
 
-                original_update = base.update
+            returncode = proc.wait()
+            if returncode != 0:
+                raise RuntimeError(f"whisper subprocess failed (exit {returncode})\n{tail[-1200:]}")
 
-                def update(n_steps=1):
-                    out = original_update(n_steps)
-                    _update_job_progress(job_id, getattr(base, "n", 0), total)
-                    return out
-
-                base.update = update
-                return base
-
-            if original_tqdm is not None:
-                whisper_transcribe_module.tqdm = tracked_tqdm
-
-            _set_job(job_id, status="running", progress=1)
-            result = whisper.transcribe(model, str(path), language=None, task="transcribe")
+            json_candidates = list(workdir.glob("*.words.json"))
+            if not json_candidates:
+                raise RuntimeError("whisper subprocess did not produce .words.json output")
+            with json_candidates[0].open("r", encoding="utf-8") as f:
+                result = json.load(f)
 
         if srt_max_chars < 10:
             srt_max_chars = 10
@@ -464,17 +535,15 @@ def _run_transcription_job(job_id: str, path: Path, srt_max_chars: int, srt_max_
             "result": result,
             "result_pretty": json.dumps(result, indent=2, ensure_ascii=False),
         }
-        _set_job(job_id, status="done", progress=100, result=payload, updated_at=time.time())
+        _set_job(job_id, status="done", progress=100, progress_source="done", result=payload, updated_at=time.time())
+        print(f"[{job_id}] Whisper job completed (100%)", flush=True)
     except Exception as exc:
-        _set_job(job_id, status="error", error=str(exc), updated_at=time.time())
+        _set_job(job_id, status="error", progress_source="error", error=str(exc), updated_at=time.time())
+        print(f"[{job_id}] Whisper job failed: {exc}", flush=True)
     finally:
-        try:
-            import whisper.transcribe as whisper_transcribe_module
-            if "original_tqdm" in locals() and original_tqdm is not None:
-                whisper_transcribe_module.tqdm = original_tqdm
-        except Exception:
-            pass
         path.unlink(missing_ok=True)
+        if workdir is not None:
+            shutil.rmtree(workdir, ignore_errors=True)
 
 
 @app.post("/api/transcribe")
@@ -499,6 +568,7 @@ async def transcribe(
         JOBS[job_id] = {
             "status": "queued",
             "progress": 0,
+            "progress_source": "queued",
             "error": None,
             "result": None,
             "created_at": time.time(),
@@ -523,11 +593,32 @@ async def transcribe(
 
 @app.get("/api/progress/{job_id}")
 async def get_progress(job_id: str):
-    with JOBS_LOCK:
-        job = JOBS.get(job_id)
+    job = _get_job_snapshot(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@app.get("/api/progress_stream/{job_id}")
+async def progress_stream(job_id: str):
+    async def event_gen():
+        last_updated = -1.0
+        while True:
+            job = _get_job_snapshot(job_id)
+            if not job:
+                yield "event: error\ndata: {\"error\":\"job_not_found\"}\n\n"
+                break
+
+            updated_at = float(job.get("updated_at", 0.0))
+            if updated_at > last_updated:
+                last_updated = updated_at
+                yield f"event: progress\ndata: {json.dumps(job)}\n\n"
+                if job.get("status") in {"done", "error"}:
+                    break
+
+            await asyncio.sleep(0.12)
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
 @app.post("/api/rematch")
