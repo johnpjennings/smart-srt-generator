@@ -24,8 +24,6 @@ When done, click "Download SRT" for the final file.
   - `Merge` combines highlighted subtitle text into a new subtitle and retimes subtitles.
 - Lets you download the final edited `.srt` file.
 
-`whisper-timestamped` is installed as a dependency via `pip` (it is not vendored in this repository).
-
 ## Requirements
 
 `whisper-timestamped` is installed as a dependency via pip (it is not vendored in this repo).
